@@ -1,4 +1,6 @@
 import os
+import threading
+from flask import Flask
 
 class Config:
     API_ID = int(os.environ.get("API_ID", "12345678"))
@@ -9,4 +11,19 @@ class Config:
     MONGO_URL = os.environ.get("MONGO_URL", "YOUR_MONGODB_URI")
     
     DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "./downloads")
-  
+    
+    # Render binding panna PORT variable
+    PORT = int(os.environ.get("PORT", 10000))
+
+# Web Port Keep-Alive Server
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is alive!", 200
+
+def run_web_server():
+    app.run(host="0.0.0.0", port=Config.PORT)
+
+# Background Thread-la web server start aagum (Bot crash aagama iruka)
+threading.Thread(target=run_web_server, daemon=True).start()
