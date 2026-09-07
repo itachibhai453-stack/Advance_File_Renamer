@@ -5,3 +5,4 @@ dnspython
 Pillow
 async-timeout
 hachoir
+flask
