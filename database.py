@@ -17,9 +17,10 @@ async def get_user(user_id):
             "screenshot": False,
             "wm_position": "bottom_right",
             "wm_size": 25,
-            "split_file": False,
-            "split_size_mb": 2000,
+            "split_file": True,
+            "split_size_mb": 1900,
             "thumbnail": None,
+            "watermark_img": None,
             "metadata_title": "Uploaded By Advance Renamer Bot"
         }
         await users_col.insert_one(default_data)
@@ -32,4 +33,4 @@ async def update_user(user_id, key, value):
 async def reset_user(user_id):
     await users_col.delete_one({"_id": user_id})
     return await get_user(user_id)
-  
+    
