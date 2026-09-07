@@ -16,6 +16,9 @@ app = Client(
     bot_token=Config.BOT_TOKEN
 )
 
+# Global State Tracker for User Inputs (Rename Name & Settings state)
+USER_STATE = {}
+
 # ----------------- PROGRESS BAR HELPER -----------------
 def humanbytes(size):
     if not size:
@@ -52,11 +55,11 @@ async def progress_bar(current, total, status_msg, start_time, action_name):
 async def build_settings_keyboard(user_id):
     s = await get_user(user_id)
     
-    upload_text = f"Default Upload | {s['default_upload']}"
-    video_tools_text = f"📹 Video Tools {'✅' if s['video_tools'] else '❌'}"
-    extra_tools_text = f"🛠 Extra Tools {'✅' if s['extra_tools'] else '❌'}"
-    sample_text = f"🎞 Sample Video {'✅' if s['sample_video'] else '❌'}"
-    ss_text = f"📸 Screenshot {'✅' if s['screenshot'] else '❌'}"
+    upload_text = f"Default Upload | {s.get('default_upload', 'Telegram')}"
+    video_tools_text = f"📹 Video Tools {'✅' if s.get('video_tools', True) else '❌'}"
+    extra_tools_text = f"🛠 Extra Tools {'✅' if s.get('extra_tools', False) else '❌'}"
+    sample_text = f"🎞 Sample Video {'✅' if s.get('sample_video', False) else '❌'}"
+    ss_text = f"📸 Screenshot {'✅' if s.get('screenshot', False) else '❌'}"
 
     keyboard = [
         [InlineKeyboardButton(upload_text, callback_data="toggle_upload")],
@@ -82,21 +85,24 @@ async def build_settings_keyboard(user_id):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
-    await get_user(message.from_user.id)
+    user_id = message.from_user.id
+    USER_STATE.pop(user_id, None) # Reset State
+    await get_user(user_id)
     text = (
         f"👋 **Hello {message.from_user.first_name}!**\n\n"
-        f"I am an **Advance File Renamer Bot** with MongoDB, Metadata, Stream Tools & Watermark.\n\n"
+        f"I am an **Advance File Renamer Bot**.\n\n"
         f"➡️ **Send me any File, Video, or Audio to rename!**\n"
         f"🖼️ **Send a Photo to set a Custom Thumbnail.**\n"
-        f"⚙️ **Use /settings for configuration.**"
+        f"⚙️ **Use /settings to configure your preferences.**"
     )
     await message.reply_text(text)
 
 @app.on_message(filters.command("settings") & filters.private)
 async def settings_command(client, message: Message):
     user_id = message.from_user.id
+    USER_STATE.pop(user_id, None) # Reset State
     settings = await get_user(user_id)
-    text = f"**Settings for {message.from_user.first_name}**\n\nDefault Upload is **{settings['default_upload']}**"
+    text = f"**Settings for {message.from_user.first_name}**\n\nDefault Upload is **{settings.get('default_upload', 'Telegram')}**"
     await message.reply_text(text, reply_markup=await build_settings_keyboard(user_id))
 
 @app.on_callback_query()
@@ -106,16 +112,16 @@ async def callback_handler(client, query: CallbackQuery):
     s = await get_user(user_id)
 
     if data == "toggle_upload":
-        new_val = "GoFile" if s["default_upload"] == "Telegram" else "Telegram"
+        new_val = "GoFile" if s.get("default_upload") == "Telegram" else "Telegram"
         await update_user(user_id, "default_upload", new_val)
     elif data == "toggle_video":
-        await update_user(user_id, "video_tools", not s["video_tools"])
+        await update_user(user_id, "video_tools", not s.get("video_tools", True))
     elif data == "toggle_extra":
-        await update_user(user_id, "extra_tools", not s["extra_tools"])
+        await update_user(user_id, "extra_tools", not s.get("extra_tools", False))
     elif data == "toggle_sample":
-        await update_user(user_id, "sample_video", not s["sample_video"])
+        await update_user(user_id, "sample_video", not s.get("sample_video", False))
     elif data == "toggle_ss":
-        await update_user(user_id, "screenshot", not s["screenshot"])
+        await update_user(user_id, "screenshot", not s.get("screenshot", False))
     elif data == "reset_settings":
         await reset_user(user_id)
     elif data == "close_menu":
@@ -123,7 +129,7 @@ async def callback_handler(client, query: CallbackQuery):
         return
 
     s = await get_user(user_id)
-    text = f"**Settings for {query.from_user.first_name}**\n\nDefault Upload is **{s['default_upload']}**"
+    text = f"**Settings for {query.from_user.first_name}**\n\nDefault Upload is **{s.get('default_upload', 'Telegram')}**"
     await query.message.edit_text(text, reply_markup=await build_settings_keyboard(user_id))
 
 
@@ -140,7 +146,7 @@ async def set_thumbnail(client, message: Message):
     await message.reply_text("✅ **Custom Thumbnail Saved Successfully in Database!**")
 
 
-# ----------------- FFMPEG UTILITIES -----------------
+# ----------------- FFMPEG ENGINE -----------------
 async def run_shell_command(cmd):
     proc = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     await proc.communicate()
@@ -165,25 +171,8 @@ async def ffmpeg_apply_metadata_and_watermark(video_file, output_file, metadata_
 
     await run_shell_command(cmd)
 
-def split_file(file_path, chunk_size_mb=1900):
-    chunk_size = chunk_size_mb * 1024 * 1024
-    part_num = 1
-    split_files = []
-    
-    with open(file_path, 'rb') as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-            part_name = f"{file_path}.part{part_num:03d}"
-            with open(part_name, 'wb') as chunk_file:
-                chunk_file.write(chunk)
-            split_files.append(part_name)
-            part_num += 1
-    return split_files
 
-
-# ----------------- MAIN PROCESSING HANDLER -----------------
+# ----------------- STEP 1: MAIN FILE RECEIVER -----------------
 @app.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_incoming_file(client, message: Message):
     user_id = message.from_user.id
@@ -205,7 +194,7 @@ async def process_incoming_file(client, message: Message):
     processed_files = [file_path]
 
     # 2. ZIP Extraction Option
-    if s["extra_tools"] and file_path.endswith(".zip"):
+    if s.get("extra_tools") and file_path.endswith(".zip"):
         await status_msg.edit_text("📦 **Extracting ZIP File...**")
         extract_folder = os.path.join(user_dir, "extracted")
         os.makedirs(extract_folder, exist_ok=True)
@@ -222,15 +211,19 @@ async def process_incoming_file(client, message: Message):
     # 3. Stream & Video Operations (Metadata & Watermark)
     final_ready_files = []
     for cur_file in processed_files:
-        if s["video_tools"] and (cur_file.endswith(".mp4") or cur_file.endswith(".mkv")):
+        if s.get("video_tools", True) and (cur_file.endswith(".mp4") or cur_file.endswith(".mkv")):
             await status_msg.edit_text("⚙️ **Applying Metadata & Watermark...**")
-            out_v = f"{cur_file}_mod.mkv"
+            
+            # Clean filename extension duplication
+            base_name = os.path.splitext(cur_file)[0]
+            out_v = f"{base_name}_mod.mkv"
             wm_file = "watermark.png"
             
             await ffmpeg_apply_metadata_and_watermark(
-                cur_file, out_v, s["metadata_title"],
+                cur_file, out_v, s.get("metadata_title", "Uploaded By Adv Renamer"),
                 wm_image_path=wm_file if os.path.exists(wm_file) else None,
-                position=s["wm_position"], size_pct=s["wm_size"]
+                position=s.get("wm_position", "bottom_right"), 
+                size_pct=s.get("wm_size", 25)
             )
             
             if os.path.exists(out_v):
@@ -240,43 +233,51 @@ async def process_incoming_file(client, message: Message):
         else:
             final_ready_files.append(cur_file)
 
-    # 4. Prompt for Rename
-    renamed_files = []
-    for cur_file in final_ready_files:
-        orig_name = os.path.basename(cur_file)
-        await status_msg.edit_text(
-            f"✨ **Work Finished for:** `{orig_name}`\n\n"
-            f"✏️ **Please send the NEW RENAME FILE NAME now:**"
-        )
-        
-        try:
-            response: Message = await client.wait_for_message(
-                chat_id=message.chat.id,
-                filters=filters.text & filters.user(user_id),
-                timeout=60
-            )
-            new_name = response.text.strip()
-        except asyncio.TimeoutError:
-            new_name = orig_name
-            await message.reply_text("⏰ **Timeout! Keeping original filename.**")
+    # Store state for User Input (Text Rename Prompt)
+    USER_STATE[user_id] = {
+        "action": "awaiting_rename",
+        "file_list": final_ready_files,
+        "status_msg_id": status_msg.id,
+        "user_dir": user_dir
+    }
 
-        target_path = os.path.join(os.path.dirname(cur_file), new_name)
-        os.rename(cur_file, target_path)
-        renamed_files.append(target_path)
+    orig_name = os.path.basename(final_ready_files[0])
+    await status_msg.edit_text(
+        f"✨ **Work Finished for:** `{orig_name}`\n\n"
+        f"✏️ **Please send the NEW RENAME FILE NAME now:**"
+    )
 
-    # 5. Split files if needed
+
+# ----------------- STEP 2: RENAME TEXT CATCHER & UPLOADER -----------------
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "settings"]))
+async def handle_rename_input(client, message: Message):
+    user_id = message.from_user.id
+    
+    if user_id not in USER_STATE or USER_STATE[user_id].get("action") != "awaiting_rename":
+        return # Normal text message, ignore or reply
+
+    state_data = USER_STATE.pop(user_id)
+    new_name = message.text.strip()
+    files = state_data["file_list"]
+    user_dir = state_data["user_dir"]
+    s = await get_user(user_id)
+
+    status_msg = await message.reply_text("🔄 **Renaming & Preparing Upload...**")
+
     upload_queue = []
-    for cur_file in renamed_files:
-        file_size_mb = os.path.getsize(cur_file) / (1024 * 1024)
-        if s["split_file"] or file_size_mb > 2000:
-            await status_msg.edit_text("✂️ **Splitting Large File...**")
-            parts = split_file(cur_file, chunk_size_mb=s["split_size_mb"])
-            upload_queue.extend(parts)
+    for cur_file in files:
+        # Check Extension
+        ext = os.path.splitext(cur_file)[1]
+        if not new_name.endswith(ext) and ext != "":
+            final_name = new_name + ext
         else:
-            upload_queue.append(cur_file)
+            final_name = new_name
 
-    # 6. Upload with Thumbnail
-    await status_msg.edit_text("📤 **Starting Upload Process...**")
+        target_path = os.path.join(os.path.dirname(cur_file), final_name)
+        os.rename(cur_file, target_path)
+        upload_queue.append(target_path)
+
+    # Upload Files
     for up_file in upload_queue:
         up_start = time.time()
         file_title = os.path.basename(up_file)
@@ -295,7 +296,17 @@ async def process_incoming_file(client, message: Message):
     await status_msg.delete()
 
 
-if __name__ == "__main__":
+# ----------------- MAIN RUNNER WITH ASYNC LOOP -----------------
+async def main():
     print("Bot is starting...")
-    app.run()
-      
+    await app.start()
+    print("Bot Started Successfully!")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    
