@@ -1,8 +1,11 @@
-# Base Python image
-FROM python:3.10-slim-buster
+# Updated Base Image (Debian Bookworm - Fully Supported)
+FROM python:3.10-slim-bookworm
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install System Dependencies including FFmpeg
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     mediainfo \
     git \
