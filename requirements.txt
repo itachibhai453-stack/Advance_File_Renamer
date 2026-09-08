@@ -1,8 +1,7 @@
 pyrogram
 tgcrypto
+pymongo
 motor
-dnspython
-Pillow
-async-timeout
+ffmpeg-python
+pillow
 hachoir
-flask
