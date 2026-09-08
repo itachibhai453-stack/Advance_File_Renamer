@@ -1,15 +1,24 @@
-FROM python:3.11-slim
+# Base Python image
+FROM python:3.10-slim-buster
 
-WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+# Install System Dependencies including FFmpeg
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    mediainfo \
+    git \
+    curl \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Set working directory
+WORKDIR /app
 
+# Copy requirements and install python packages
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy source code
 COPY . .
 
-CMD ["python", "main.py"]
+# Command to run the Telegram Bot
+CMD ["python", "bot.py"]
