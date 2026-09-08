@@ -1,36 +1,31 @@
 import motor.motor_asyncio
 from config import Config
 
-client = motor.motor_asyncio.AsyncIOMotorClient(Config.MONGO_URL)
-db = client["adv_renamer_bot"]
-users_col = db["users"]
+class Database:
+    def __init__(self):
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(Config.DB_URL)
+        self.db = self.client[Config.DB_NAME]
+        self.users = self.db.users
 
-async def get_user(user_id):
-    user = await users_col.find_one({"_id": user_id})
-    if not user:
-        default_data = {
-            "_id": user_id,
-            "default_upload": "Telegram",
-            "video_tools": True,
-            "extra_tools": False,
-            "sample_video": False,
-            "screenshot": False,
-            "wm_position": "bottom_right",
-            "wm_size": 25,
-            "split_file": True,
-            "split_size_mb": 1900,
-            "thumbnail": None,
-            "watermark_img": None,
-            "metadata_title": "Uploaded By Advance Renamer Bot"
-        }
-        await users_col.insert_one(default_data)
-        return default_data
-    return user
+    async def set_thumb(self, user_id, file_id):
+        await self.users.update_one({"_id": user_id}, {"$set": {"thumb": file_id}}, upsert=True)
 
-async def update_user(user_id, key, value):
-    await users_col.update_one({"_id": user_id}, {"$set": {key: value}})
+    async def get_thumb(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("thumb") if user else None
 
-async def reset_user(user_id):
-    await users_col.delete_one({"_id": user_id})
-    return await get_user(user_id)
-    
+    async def set_auto_rename(self, user_id, pattern):
+        await self.users.update_one({"_id": user_id}, {"$set": {"auto_rename": pattern}}, upsert=True)
+
+    async def get_auto_rename(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("auto_rename") if user else None
+
+    async def set_metadata(self, user_id, title):
+        await self.users.update_one({"_id": user_id}, {"$set": {"metadata": title}}, upsert=True)
+
+    async def get_metadata(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("metadata") if user else None
+
+db = Database()
