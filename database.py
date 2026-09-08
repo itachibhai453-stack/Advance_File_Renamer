@@ -28,4 +28,26 @@ class Database:
         user = await self.users.find_one({"_id": user_id})
         return user.get("metadata") if user else None
 
+    # Text Watermark database options
+    async def set_wm_text(self, user_id, text):
+        await self.users.update_one({"_id": user_id}, {"$set": {"wm_text": text}}, upsert=True)
+
+    async def get_wm_text(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("wm_text") if user else None
+
+    async def set_wm_pos(self, user_id, pos):
+        await self.users.update_one({"_id": user_id}, {"$set": {"wm_pos": pos}}, upsert=True)
+
+    async def get_wm_pos(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("wm_pos") if user else "bottom_right"
+
+    async def set_wm_size(self, user_id, size):
+        await self.users.update_one({"_id": user_id}, {"$set": {"wm_size": size}}, upsert=True)
+
+    async def get_wm_size(self, user_id):
+        user = await self.users.find_one({"_id": user_id})
+        return user.get("wm_size") if user else "24"
+        
 db = Database()
