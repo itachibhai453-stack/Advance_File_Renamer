@@ -8,13 +8,17 @@ import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Config
 from database import db
 
+# Progress updates-ஐ track பண்ண Global Dictionary
+PROGRESS_CACHE = {}
 
-# ----------------- DUMMY HTTP SERVER FOR RENDER -----------------
+
+# ----------------- DUMMY HTTP SERVER -----------------
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -40,9 +44,48 @@ app = Client(
 )
 
 
-# ----------------- HELPER FUNCTIONS -----------------
+# ----------------- FIXED PROGRESS BAR -----------------
+async def progress_bar(current, total, status_text, start_time, message):
+    now = time.time()
+    diff = now - start_time
+
+    # FloodWait வராமல் இருக்க 3 வினாடிகளுக்கு ஒருமுறை மட்டும் Text Edit ஆகும்
+    msg_id = message.id
+    last_update = PROGRESS_CACHE.get(msg_id, 0)
+
+    if (now - last_update < 3) and (current != total):
+        return
+
+    PROGRESS_CACHE[msg_id] = now
+    percentage = current * 100 / total
+    speed = current / diff if diff > 0 else 0
+    time_to_completion = round((total - current) / speed) if speed > 0 else 0
+
+    progress = "[{0}{1}] {2}%\n".format(
+        "".join(["▰" for _ in range(math.floor(percentage / 10))]),
+        "".join(["▱" for _ in range(10 - math.floor(percentage / 10))]),
+        round(percentage, 1),
+    )
+
+    tmp = (
+        f"**{status_text}**\n\n"
+        + progress
+        + f"**Speed:** {round(speed / 1024 / 1024, 2)} MB/s\n"
+        + f"**Done:** {round(current / 1024 / 1024, 2)} MB / {round(total / 1024 / 1024, 2)} MB\n"
+        + f"**ETA:** {time_to_completion}s"
+    )
+
+    try:
+        await message.edit_text(tmp)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
+
+
 async def get_video_duration(input_file):
-    """FFprobe பயன்படுத்தி Video-வின் மொத்த நேரத்தை (Seconds) கண்டறிதல்"""
     cmd = [
         "ffprobe",
         "-v",
@@ -64,38 +107,8 @@ async def get_video_duration(input_file):
 
 
 async def get_file_streams(input_file):
-    """Audio மற்றும் Subtitle ஸ்ட்ரீம்களை கண்டறிந்து விவரங்களை எடுத்தல்"""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=index,codec_type,codec_name:stream_tags=language,title",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        input_file,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
+    import json
 
-    lines = stdout.decode().strip().split("\n")
-    streams = []
-    current_stream = {}
-
-    for line in lines:
-        if "=" in line:
-            key, value = line.split("=", 1)
-            current_stream[key] = value
-            if key == "codec_type" and len(current_stream) > 1:
-                pass
-        else:
-            if current_stream:
-                streams.append(current_stream)
-                current_stream = {}
-
-    # Refined Parsing Logic
     cmd_json = [
         "ffprobe",
         "-v",
@@ -109,45 +122,13 @@ async def get_file_streams(input_file):
         *cmd_json, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout_j, _ = await proc_j.communicate()
-
-    import json
-
-    data = json.loads(stdout_j.decode())
-    return data.get("streams", [])
-
-
-# ----------------- PROGRESS BAR UTILITY (For Telegram Download/Upload) -----------------
-async def progress_bar(current, total, status_text, start_time, message):
-    now = time.time()
-    diff = now - start_time
-    if round(diff % 5) == 0 or current == total:
-        percentage = current * 100 / total
-        speed = current / diff if diff > 0 else 0
-        elapsed_time = round(diff)
-        time_to_completion = (
-            round((total - current) / speed) if speed > 0 else 0
-        )
-
-        progress = "[{0}{1}] {2}%\n".format(
-            "".join(["▰" for _ in range(math.floor(percentage / 10))]),
-            "".join(["▱" for _ in range(10 - math.floor(percentage / 10))]),
-            round(percentage, 2),
-        )
-
-        tmp = (
-            progress
-            + f"**Speed:** {round(speed / 1024 / 1024, 2)} MB/s\n"
-            + f"**Done:** {round(current / 1024 / 1024, 2)} MB / {round(total / 1024 / 1024, 2)} MB\n"
-            + f"**ETA:** {time_to_completion}s"
-        )
-
-        try:
-            await message.edit_text(f"**{status_text}**\n\n{tmp}")
-        except:
-            pass
+    try:
+        data = json.loads(stdout_j.decode())
+        return data.get("streams", [])
+    except:
+        return []
 
 
-# ----------------- WATERMARK HELPERS -----------------
 def get_drawtext_filter(text, pos="bottom_right", fontsize="24"):
     positions = {
         "top_left": "x=15:y=15",
@@ -157,13 +138,10 @@ def get_drawtext_filter(text, pos="bottom_right", fontsize="24"):
         "center": "x=(w-tw)/2:y=(h-th)/2",
     }
     xy = positions.get(pos, positions["bottom_right"])
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    if os.path.exists(font_path):
-        return f"drawtext=fontfile='{font_path}':text='{text}':fontcolor=white:fontsize={fontsize}:box=1:boxcolor=black@0.5:boxborderw=5:{xy}"
     return f"drawtext=text='{text}':fontcolor=white:fontsize={fontsize}:box=1:boxcolor=black@0.5:boxborderw=5:{xy}"
 
 
-# ----------------- COMMAND HANDLERS -----------------
+# ----------------- COMMANDS -----------------
 @app.on_message(filters.command("start"))
 async def start(client, message):
     await message.reply_text(
@@ -171,140 +149,6 @@ async def start(client, message):
         "I am an advanced Media Swiss-Knife Bot.\n"
         "Send me any Video/File to process Metadata, Streams, Watermark, Zip, or Auto-Rename!"
     )
-
-
-@app.on_message(filters.command("set_thumb") & filters.private)
-async def set_thumbnail(client, message):
-    if message.reply_to_message and message.reply_to_message.photo:
-        thumb_id = message.reply_to_message.photo.file_id
-        await db.set_thumb(message.from_user.id, thumb_id)
-        await message.reply_text("✅ Custom Thumbnail saved successfully!")
-    else:
-        await message.reply_text(
-            "⚠️ Reply to an image with `/set_thumb` to save it."
-        )
-
-
-@app.on_message(filters.command("set_autorename") & filters.private)
-async def set_auto_rename_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "⚠️ Usage: `/set_autorename [Episode_{ep}_1080p]`"
-        )
-    pattern = message.text.split(None, 1)[1]
-    await db.set_auto_rename(message.from_user.id, pattern)
-    await message.reply_text(f"✅ Auto-Rename Pattern set to: `{pattern}`")
-
-
-# ----------------- WATERMARK COMMANDS -----------------
-@app.on_message(filters.command("set_wm_text") & filters.private)
-async def set_watermark_text(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/set_wm_text @Anime_Hub_Tamil`"
-        )
-    text = message.text.split(None, 1)[1]
-    await db.set_wm_text(message.from_user.id, text)
-    await message.reply_text(f"✅ **Watermark Text Saved:** `{text}`")
-
-
-@app.on_message(filters.command("wm_pos") & filters.private)
-async def set_watermark_pos(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/wm_pos [top_left | top_right | bottom_left | bottom_right | center]`"
-        )
-    pos = message.command[1].lower()
-    valid_positions = [
-        "top_left",
-        "top_right",
-        "bottom_left",
-        "bottom_right",
-        "center",
-    ]
-    if pos not in valid_positions:
-        return await message.reply_text(
-            "❌ Invalid position! Choose from: `top_left`, `top_right`, `bottom_left`, `bottom_right`, `center`"
-        )
-    await db.set_wm_pos(message.from_user.id, pos)
-    await message.reply_text(f"✅ **Watermark Position set to:** `{pos}`")
-
-
-@app.on_message(filters.command("wm_size") & filters.private)
-async def set_watermark_size(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/wm_size 24` (Font size for text)"
-        )
-    size = message.command[1]
-    await db.set_wm_size(message.from_user.id, size)
-    await message.reply_text(f"✅ **Watermark Size set to:** `{size}`")
-
-
-@app.on_message(filters.command("unzip") & filters.private)
-async def unzip_file(client, message):
-    if not message.reply_to_message or not message.reply_to_message.document:
-        return await message.reply_text(
-            "⚠️ **Usage:** Reply to a `.zip` file with `/unzip` command!"
-        )
-
-    target_msg = message.reply_to_message
-    file_name = target_msg.document.file_name or "archive.zip"
-
-    if not file_name.endswith(".zip"):
-        return await message.reply_text("❌ Please reply to a valid `.zip` file!")
-
-    status = await message.reply_text("📥 Downloading ZIP file...")
-    start_time = time.time()
-
-    zip_path = await client.download_media(
-        target_msg,
-        progress=progress_bar,
-        progress_args=("📥 Downloading ZIP...", start_time, status),
-    )
-
-    extract_dir = f"extracted_{message.id}"
-    os.makedirs(extract_dir, exist_ok=True)
-
-    await status.edit_text("📦 Extracting ZIP contents...")
-
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(extract_dir)
-
-        await status.edit_text("📤 Uploading extracted files...")
-
-        extracted_count = 0
-        for root, dirs, files in os.walk(extract_dir):
-            for file in files:
-                file_full_path = os.path.join(root, file)
-                upload_start = time.time()
-
-                await client.send_document(
-                    chat_id=message.chat.id,
-                    document=file_full_path,
-                    caption=f"📁 `{file}`",
-                    progress=progress_bar,
-                    progress_args=(
-                        f"📤 Uploading {file}...",
-                        upload_start,
-                        status,
-                    ),
-                )
-                extracted_count += 1
-
-        await status.edit_text(
-            f"✅ Extracted and uploaded **{extracted_count}** files successfully!"
-        )
-
-    except Exception as e:
-        await status.edit_text(f"❌ Error during unzip: `{str(e)}`")
-
-    finally:
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
-        if os.path.exists(extract_dir):
-            shutil.rmtree(extract_dir)
 
 
 # ----------------- MEDIA PROCESSOR -----------------
@@ -325,11 +169,6 @@ async def handle_media(client, message):
             ),
             InlineKeyboardButton(
                 "📦 Zip / Split", callback_data="tools_zipsplit"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📝 Edit Metadata", callback_data="tools_metadata"
             ),
         ],
     ])
@@ -372,11 +211,11 @@ async def cb_handler(client, query):
             "⚙️ **Stream Processing Tools:**", reply_markup=kb
         )
 
-    # ----------------- STREAM SELECT & REMOVE -----------------
+    # STREAM SELECTION & REMOVAL
     elif data in ["select_rm_audio", "select_rm_sub"]:
         stype = "audio" if data == "select_rm_audio" else "subtitle"
         status = await query.message.edit_text(
-            f"🔍 Analyzing {stype} streams in video..."
+            f"📥 Downloading video to inspect {stype} streams..."
         )
 
         start_time = time.time()
@@ -401,46 +240,51 @@ async def cb_handler(client, query):
             )
 
         buttons = []
+        # Save file path safely with unique user ID
+        clean_path = file_path.replace("downloads/", "")
+
         for index, s in enumerate(target_streams):
             s_index = s.get("index")
-            lang = s.get("tags", {}).get("language", "Unknown")
-            title = s.get("tags", {}).get("title", f"Track {index + 1}")
-            codec = s.get("codec_name", "Unknown")
+            lang = s.get("tags", {}).get("language", "und")
+            codec = s.get("codec_name", "unk")
 
             btn_text = f"🗑️ Stream #{s_index} [{lang.upper()}] ({codec})"
-            # Format: rmstream_TYPE_STREAMINDEX_FILEPATH
+            # Send file path identifier
             buttons.append([
                 InlineKeyboardButton(
-                    btn_text, callback_data=f"rmstr_{stype}_{s_index}"
+                    btn_text,
+                    callback_data=f"rmstr_{stype}_{s_index}_{msg.id}",
                 )
             ])
 
-        buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="cancel_action")])
-
-        # Save temporary path in global or local context (or use bot session)
-        app.temp_filepath = file_path
+        buttons.append([
+            InlineKeyboardButton("🔙 Cancel", callback_data="cancel_action")
+        ])
         await status.edit_text(
             f" Choose which **{stype.upper()}** stream to remove:",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
     elif data.startswith("rmstr_"):
-        _, stype, s_index = data.split("_")
-        file_path = getattr(app, "temp_filepath", None)
+        parts = data.split("_")
+        stype = parts[1]
+        s_index = parts[2]
+        msg_id = parts[3]
 
-        if not file_path or not os.path.exists(file_path):
-            return await query.message.edit_text(
-                "❌ Session expired! Please try again."
-            )
+        file_path = f"downloads/{msg.id}.mp4"  # Default pyrogram download folder structure check
+        if not os.path.exists(file_path):
+            # Fallback file lookup
+            for f in os.listdir("downloads"):
+                if f.startswith(str(msg_id)):
+                    file_path = os.path.join("downloads", f)
+                    break
 
         status = await query.message.edit_text(
             f"⚙️ Removing Stream #{s_index}..."
         )
-        output_path = f"processed_{msg.id}.mp4"
+        output_path = f"processed_{msg_id}.mp4"
 
-        # FFmpeg command to map all EXCEPT selected stream (-map -0:s_index)
         cmd = f'ffmpeg -i "{file_path}" -map 0 -map -0:{s_index} -c copy "{output_path}" -y'
-
         proc = await asyncio.create_subprocess_shell(cmd)
         await proc.communicate()
 
@@ -449,114 +293,26 @@ async def cb_handler(client, query):
 
         if os.path.exists(output_path):
             await status.edit_text(
-                f"✅ Stream #{s_index} removed successfully!\n\n**Select next action:**",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "✏️ Custom Rename",
-                            callback_data=f"do_rename_{output_path}",
-                        ),
-                        InlineKeyboardButton(
-                            "🤖 Apply Auto-Rename",
-                            callback_data=f"do_autorename_{output_path}",
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🚀 Direct Upload",
-                            callback_data=f"direct_upload_{output_path}",
-                        )
-                    ],
-                ]),
+                f"✅ Stream #{s_index} removed!\n\n**Select action:**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🚀 Direct Upload",
+                        callback_data=f"direct_upload_{output_path}",
+                    )
+                ]]),
             )
         else:
-            await status.edit_text("❌ Failed to remove stream.")
+            await status.edit_text("❌ Stream Removal Failed!")
 
-    elif data == "rm_all_audio":
-        status = await query.message.edit_text("📥 Downloading file...")
-        start_time = time.time()
-        file_path = await client.download_media(
-            msg,
-            progress=progress_bar,
-            progress_args=("📥 Downloading...", start_time, status),
-        )
-
-        output_path = f"no_audio_{msg.id}.mp4"
-        cmd = f'ffmpeg -i "{file_path}" -an -c:v copy "{output_path}" -y'
-
-        await status.edit_text("⚙️ Removing All Audio Streams...")
-        proc = await asyncio.create_subprocess_shell(cmd)
-        await proc.communicate()
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        await status.edit_text(
-            "✅ All Audios removed!\n\n**Select next action:**",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "🚀 Direct Upload",
-                        callback_data=f"direct_upload_{output_path}",
-                    )
-                ]
-            ]),
-        )
-
-    elif data == "rm_all_sub":
-        status = await query.message.edit_text("📥 Downloading file...")
-        start_time = time.time()
-        file_path = await client.download_media(
-            msg,
-            progress=progress_bar,
-            progress_args=("📥 Downloading...", start_time, status),
-        )
-
-        output_path = f"no_sub_{msg.id}.mp4"
-        cmd = f'ffmpeg -i "{file_path}" -sn -c:v copy -c:a copy "{output_path}" -y'
-
-        await status.edit_text("⚙️ Removing All Subtitle Streams...")
-        proc = await asyncio.create_subprocess_shell(cmd)
-        await proc.communicate()
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        await status.edit_text(
-            "✅ All Subtitles removed!\n\n**Select next action:**",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "🚀 Direct Upload",
-                        callback_data=f"direct_upload_{output_path}",
-                    )
-                ]
-            ]),
-        )
-
-    # ----------------- WATERMARK WITH REALTIME PROGRESS BAR -----------------
+    # WATERMARK PROCESS WITH PROGRESS BAR
     elif data == "tools_watermark":
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "📝 Text Watermark", callback_data="apply_text_watermark"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ Watermark Settings", callback_data="wm_settings_info"
-                )
-            ],
-        ])
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "📝 Text Watermark", callback_data="apply_text_watermark"
+            )
+        ]])
         await query.message.edit_text(
-            "💧 **Watermark Processor:**\nSelect watermark type to apply:",
-            reply_markup=kb,
-        )
-
-    elif data == "wm_settings_info":
-        await query.message.edit_text(
-            "⚙️ **Watermark Commands:**\n\n"
-            "• `/set_wm_text @Anime_Hub_Tamil` - Set Text Watermark\n"
-            "• `/wm_pos top_right` - Position (`top_left`, `top_right`, `bottom_left`, `bottom_right`, `center`)\n"
-            "• `/wm_size 24` - Set Font Size (default: 24)"
+            "💧 **Watermark Processor:**", reply_markup=kb
         )
 
     elif data == "apply_text_watermark":
@@ -574,8 +330,6 @@ async def cb_handler(client, query):
 
         output_path = f"wm_{msg.id}.mp4"
         vf_filter = get_drawtext_filter(wm_text, wm_pos, wm_size)
-
-        # Video Total Duration Calculation
         total_duration = await get_video_duration(file_path)
 
         ffmpeg_cmd = [
@@ -599,13 +353,10 @@ async def cb_handler(client, query):
         )
 
         last_percent = -1
-
-        # Real-time FFmpeg Progress Parser
         while True:
             line = await proc.stderr.readline()
             if not line:
                 break
-
             line_str = line.decode("utf-8", errors="ignore")
             time_match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", line_str)
 
@@ -613,18 +364,15 @@ async def cb_handler(client, query):
                 hours, minutes, seconds = map(float, time_match.groups())
                 current_time = hours * 3600 + minutes * 60 + seconds
                 percentage = int((current_time / total_duration) * 100)
-                percentage = min(percentage, 100)
 
                 if percentage >= last_percent + 5:
                     last_percent = percentage
                     filled = "▰" * (percentage // 10)
                     empty = "▱" * (10 - (percentage // 10))
-                    progress_text = (
-                        f"💧 **Watermark Adding...**\n\n"
-                        f"[{filled}{empty}] {percentage}%\n"
-                    )
                     try:
-                        await status.edit_text(progress_text)
+                        await status.edit_text(
+                            f"💧 **Watermarking...**\n\n[{filled}{empty}] {percentage}%\n"
+                        )
                     except:
                         pass
 
@@ -635,34 +383,21 @@ async def cb_handler(client, query):
 
         if os.path.exists(output_path):
             await status.edit_text(
-                "✅ Watermark Added Successfully!\n\n**Select next action:**",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "✏️ Custom Rename",
-                            callback_data=f"do_rename_{output_path}",
-                        ),
-                        InlineKeyboardButton(
-                            "🤖 Auto Rename",
-                            callback_data=f"do_autorename_{output_path}",
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🚀 Direct Upload",
-                            callback_data=f"direct_upload_{output_path}",
-                        )
-                    ],
-                ]),
+                "✅ Watermark Added Successfully!",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🚀 Direct Upload",
+                        callback_data=f"direct_upload_{output_path}",
+                    )
+                ]]),
             )
         else:
-            await status.edit_text(
-                "❌ Watermarking failed. Please check video codec or settings."
-            )
+            await status.edit_text("❌ Watermarking Failed.")
 
+    # DIRECT UPLOAD FIX
     elif data.startswith("direct_upload_"):
-        output_path = data.split("_", 2)[2]
-        status = await query.message.edit_text("📤 Uploading file...")
+        output_path = data.replace("direct_upload_", "")
+        status = await query.message.edit_text("📤 Uploading File...")
         start_time = time.time()
 
         thumb_id = await db.get_thumb(user_id)
@@ -670,25 +405,22 @@ async def cb_handler(client, query):
             await client.download_media(thumb_id) if thumb_id else None
         )
 
-        await client.send_document(
-            chat_id=user_id,
-            document=output_path,
-            thumb=thumb_path,
-            progress=progress_bar,
-            progress_args=("📤 Uploading...", start_time, status),
-        )
-
-        if os.path.exists(output_path):
-            os.remove(output_path)
-        if thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
-        await status.delete()
-
-    elif data == "cancel_action":
-        file_path = getattr(app, "temp_filepath", None)
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-        await query.message.edit_text("❌ Action Cancelled.")
+        try:
+            await client.send_document(
+                chat_id=user_id,
+                document=output_path,
+                thumb=thumb_path,
+                progress=progress_bar,
+                progress_args=("📤 Uploading File...", start_time, status),
+            )
+            await status.delete()
+        except Exception as e:
+            await status.edit_text(f"❌ Upload Failed: `{str(e)}`")
+        finally:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
 
 
 if __name__ == "__main__":
