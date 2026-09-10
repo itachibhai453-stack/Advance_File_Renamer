@@ -422,6 +422,89 @@ async def cb_handler(client, query):
             if thumb_path and os.path.exists(thumb_path):
                 os.remove(thumb_path)
 
+@app.on_message(filters.command("help"))
+async def help_cmd(client, message):
+    await message.reply_text(
+        "**Available Commands:**\n\n"
+        "/set_thumb - Reply to an image to set custom thumbnail\n"
+        "/get_thumb - View your current saved thumbnail\n"
+        "/del_thumb - Delete your current thumbnail\n"
+        "/set_autorename - Set auto rename pattern (e.g. /set_autorename [S01E01])\n"
+        "/get_autorename - Check current auto rename pattern\n"
+        "/del_autorename - Clear current auto rename pattern\n"
+        "/set_wm_text - Set watermark text\n"
+        "/wm_pos - Set watermark position (top_left, top_right, bottom_left, bottom_right, center)\n"
+        "/wm_size - Set watermark scale/font size (e.g. /wm_size 15)\n"
+        "/del_wm_text - Reset watermark text to default"
+    )
+
+@app.on_message(filters.command("set_thumb"))
+async def set_thumb_cmd(client, message):
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        return await message.reply_text("⚠️ Reply to a photo with /set_thumb")
+    file_id = message.reply_to_message.photo.file_id
+    await db.set_thumb(message.from_user.id, file_id)
+    await message.reply_text("✅ Thumbnail saved!")
+
+@app.on_message(filters.command("get_thumb"))
+async def get_thumb_cmd(client, message):
+    thumb_id = await db.get_thumb(message.from_user.id)
+    if not thumb_id:
+        return await message.reply_text("❌ No thumbnail saved yet.")
+    await message.reply_photo(thumb_id, caption="🖼️ Your saved thumbnail")
+
+@app.on_message(filters.command("del_thumb"))
+async def del_thumb_cmd(client, message):
+    await db.set_thumb(message.from_user.id, None)
+    await message.reply_text("🗑️ Thumbnail deleted.")
+
+@app.on_message(filters.command("set_autorename"))
+async def set_autorename_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("⚠️ Usage: /set_autorename [S01E01]")
+    pattern = message.text.split(None, 1)[1]
+    await db.set_auto_rename(message.from_user.id, pattern)
+    await message.reply_text(f"✅ Auto-rename pattern set:\n`{pattern}`")
+
+@app.on_message(filters.command("get_autorename"))
+async def get_autorename_cmd(client, message):
+    pattern = await db.get_auto_rename(message.from_user.id)
+    if not pattern:
+        return await message.reply_text("❌ No auto-rename pattern set.")
+    await message.reply_text(f"📝 Current pattern:\n`{pattern}`")
+
+@app.on_message(filters.command("del_autorename"))
+async def del_autorename_cmd(client, message):
+    await db.set_auto_rename(message.from_user.id, None)
+    await message.reply_text("🗑️ Auto-rename pattern cleared.")
+
+@app.on_message(filters.command("set_wm_text"))
+async def set_wm_text_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("⚠️ Usage: /set_wm_text Your Text Here")
+    text = message.text.split(None, 1)[1]
+    await db.set_wm_text(message.from_user.id, text)
+    await message.reply_text(f"✅ Watermark text set to:\n`{text}`")
+
+@app.on_message(filters.command("del_wm_text"))
+async def del_wm_text_cmd(client, message):
+    await db.set_wm_text(message.from_user.id, None)
+    await message.reply_text("🗑️ Watermark text reset to default.")
+
+@app.on_message(filters.command("wm_pos"))
+async def wm_pos_cmd(client, message):
+    valid = ["top_left", "top_right", "bottom_left", "bottom_right", "center"]
+    if len(message.command) < 2 or message.command[1] not in valid:
+        return await message.reply_text("⚠️ Usage: /wm_pos <position>\nValid: " + ", ".join(valid))
+    await db.set_wm_pos(message.from_user.id, message.command[1])
+    await message.reply_text(f"✅ Watermark position set to: {message.command[1]}")
+
+@app.on_message(filters.command("wm_size"))
+async def wm_size_cmd(client, message):
+    if len(message.command) < 2 or not message.command[1].isdigit():
+        return await message.reply_text("⚠️ Usage: /wm_size 15")
+    await db.set_wm_size(message.from_user.id, message.command[1])
+    await message.reply_text(f"✅ Watermark size set to: {message.command[1]}")
 
 if __name__ == "__main__":
     app.run()
