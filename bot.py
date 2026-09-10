@@ -616,7 +616,7 @@ async def run_ffmpeg(
             # FFmpeg time=
             # ------------------------------------------------
 
-            if total_duration > 0:
+            if total_duration and float(total_duration) > 0:
 
                 match = re.search(
                     r"time=(\d+):(\d+):(\d+(?:\.\d+)?)",
@@ -635,19 +635,22 @@ async def run_ffmpeg(
                         seconds
                     )
 
-                    percentage = int(
-                        (
-                            current_time /
-                            total_duration
-                        ) * 100
-                    )
+                    try:
+                        percentage = int(
+                            (
+                                current_time /
+                                float(total_duration)
+                            ) * 100
+                        )
 
-                    percentage = max(
-                        0,
-                        min(percentage, 100)
-                    )
-
-                    if percentage >= last_percent + 5:
+                        percentage = max(
+                            0,
+                            min(percentage, 100)
+                        )
+                    except ZeroDivisionError:
+                        percentage = 0
+                        
+                        if percentage >= last_percent + 5:
 
                         last_percent = percentage
 
