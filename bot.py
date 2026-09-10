@@ -617,14 +617,12 @@ async def run_ffmpeg(
             # ------------------------------------------------
 
             if total_duration and float(total_duration) > 0:
-
                 match = re.search(
                     r"time=(\d+):(\d+):(\d+(?:\.\d+)?)",
                     decoded
                 )
 
                 if match:
-
                     hours = float(match.group(1))
                     minutes = float(match.group(2))
                     seconds = float(match.group(3))
