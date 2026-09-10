@@ -491,28 +491,27 @@ async def run_ffmpeg(
     total_duration=0,
     label="Processing"
 ):
+    print("[FFMPEG]", " ".join(map(str, command)))
 
-    print(
-        "[FFMPEG]",
-        " ".join(map(str, command))
-    )
+    process = None
 
     try:
-
         process = await asyncio.create_subprocess_exec(
-
-            *command,
-
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+    *command,
+    limit=1024 * 1024,
+    stdout=asyncio.subprocess.PIPE,
+    stderr=asyncio.subprocess.PIPE,
         )
 
         last_percent = -1
-        stderr_lines = []
+        stderr_data = []
 
         while True:
-
-            line = await process.stderr.readline()
+            try:
+                line = await process.stderr.readline()
+            except ValueError as e:
+                print(f"[FFMPEG READ ERROR] {e}")
+                continue
 
             if not line:
                 break
@@ -522,7 +521,96 @@ async def run_ffmpeg(
                 errors="ignore"
             )
 
-            stderr_lines.append(decoded)
+            stderr_data.append(decoded)
+
+            # --------------------------------------------
+            # Read FFmpeg progress
+            # --------------------------------------------
+
+            if total_duration > 0:
+
+                match = re.search(
+                    r"time=(\d+):(\d+):(\d+(?:\.\d+)?)",
+                    decoded
+                )
+
+                if match:
+
+                    hours = float(match.group(1))
+                    minutes = float(match.group(2))
+                    seconds = float(match.group(3))
+
+                    current_time = (
+                        hours * 3600
+                        + minutes * 60
+                        + seconds
+                    )
+
+                    percentage = int(
+                        (current_time / total_duration) * 100
+                    )
+
+                    percentage = max(
+                        0,
+                        min(percentage, 100)
+                    )
+
+                    if percentage >= last_percent + 5:
+
+                        last_percent = percentage
+
+                        filled = min(
+                            percentage // 10,
+                            10
+                        )
+
+                        empty = 10 - filled
+
+                        bar = (
+                            "▰" * filled
+                            + "▱" * empty
+                        )
+
+                        await safe_edit_message(
+                            status,
+                            f"💧 **{label}...**\n\n"
+                            f"[{bar}] {percentage}%"
+                        )
+
+        await process.wait()
+
+        error_output = "".join(stderr_data)
+
+        if process.returncode != 0:
+
+            print(
+                "[FFMPEG FAILED]\n"
+                + error_output[-5000:]
+            )
+
+            return False, error_output
+
+        print("[FFMPEG] Completed successfully")
+
+        return True, error_output
+
+    except asyncio.CancelledError:
+
+        if process:
+
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+
+        raise
+
+    except Exception as e:
+
+        print(f"[FFMPEG EXCEPTION] {repr(e)}")
+
+        return False, str(e)
 
             # ------------------------------------------------
             # FFmpeg time=
