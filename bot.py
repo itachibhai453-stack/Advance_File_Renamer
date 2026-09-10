@@ -615,9 +615,8 @@ async def run_ffmpeg(
             # ------------------------------------------------
             # FFmpeg time=
             # ------------------------------------------------
-
-                        percentage = 0
-                        if percentage >= last_percent + 5:
+            percentage = 0 if 'total_duration' not in locals() else 0
+            if percentage >= last_percent:
 
                         last_percent = percentage
 
